@@ -1,0 +1,373 @@
+---
+title: "Cardiotocography and Machine Learning"
+author: "Jason Holland"
+date: "5/12/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+# Cardiotocography Data Set
+
+############################################################
+# Data taken from                                          #
+# https://archive.ics.uci.edu/ml/datasets/Cardiotocography #
+############################################################
+# Project Location:                                        #
+# https://github.com/jholland5/CTG_ML                      #
+############################################################
+
+# Required Packages:
+
+if(!require(readr)) install.packages("readr", repos = "http://cran.us.r-project.org")
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(rpart)) install.packages("rpart", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+
+# This is the URL for the data that will be analyzed.
+urlfile <- "https://raw.githubusercontent.com/jholland5/CTG_ML/master/CTG.csv"
+  
+# Read the data into R and name it liver.
+ctg <- read_csv(url(urlfile))
+
+```
+
+
+## Introduction
+
+Cardiotocography (CTG) measures several aspects of heart rate prior to and during birth.  The CTG is most often employed when a pregnancy is at risk due to circumstances such as infection, bleeding, twins, or several other issues.  A physician may use a CTG reading to make the decision to deliver a baby early based on signs of distress. For more information on CTG see  
+<https://en.wikipedia.org/wiki/Cardiotocography>.
+
+
+### Data for Analysis
+
+The data used in this paper was obtained from the UCI Machine Learning Repository at  
+<https://archive.ics.uci.edu/ml/datasets/Cardiotocography>.  The raw data consists of 21 predictors and 2 possible responses.  For this paper, the response variable studied is *NSP*.  In the raw data *NSP* has three values; 1 for normal, 2 for suspect, and 3 for pathological.  For our analysis, we use 0 for one class (normal) and 1 for the other class which is suspected abnormalities.  In this way, we are using the data for a binary classification problem.  Our task will then be to develop a model that can predict the class based on measurements taken from a CTG reading.
+
+The predictor variables available include such measurements as beats per minute (*LB*), uterine contractions per second (*UC*), abnormal short term variability (*ASTV*) and several others.  We include a table of each of these predictors.
+
+
+```{r echo=FALSE}
+Predictor <- c("LB","AC","FM","UC","DL","DS","DP","ASTV","MSTV","ALTV","MLTV","Width","Min","Max","Nmax","Nzeros","Mode","Mean","Median","Variance","Tendency")
+Description <- c("Beats per Min.","Accel. per sec.","Fetal Movement per sec.","Uterine contrac. per sec.","Light Decel. per sec.","Severe Decel. per sec.","Prolonged Decel. per sec.","Abn. Short Term Var.","Mean Short Term Var.","Abn. Long Term Var.","Mean Long Term Var.","Hist. Width","Hist. Min","Hist. Max","Hist. Peaks","Hist. Zeros","Hist. Mode","Hist. Mean","Hist. Median","Hist. Var.","Hist. Tendency")
+data.frame(Predictor,Description)
+```
+
+
+The goal of this analysis is to accurately predict the class based on the predictor variables using two common machine learning algorithms.  The algorithms we employ are Logistic Regression and K-Nearest Neighbors or KNN.  We closely follow techniques for developing models and computing model statistics found in *Introduction to Data Science* by Irizarry which can be found at <https://rafalab.github.io/dsbook/>.  The key steps for achieving our goal will be to  
+
+1. use R to prepare the data for analysis,  
+2. use R to summarize and visualize the predictors,  
+3. use R to run the models, and  
+4. use R to examine the results and quantify effectiveness.
+
+
+## Analysis
+
+### Data Preparation
+
+A statistical summary of the data set is provided in the appendix. After loading the data set and all required packages into R, the data is read into R using the *readr* package and stored as a data frame.  We remove three rows with missing data and the result is a data set with 2,126 rows containing individual CTG data.  There are 22 columns with 21 predictors and the response variable *NSP*.  We look at the distributions of 20 of the predictors.  
+
+```{r echo=FALSE}
+ctg <- na.omit(ctg)
+
+######################## Histograms ##################
+
+ctg %>%
+  gather(-NSP, -DS, key = "var", value = "value") %>% 
+  ggplot(aes(x = value, color = NSP)) +
+  geom_histogram(position = "identity",bins=18,fill = "plum") +
+  facet_wrap(~ var, scales = "free") + 
+  labs(title = "Distributions of Predictors") + 
+  theme(axis.title.x=element_blank(),axis.title.y = element_blank())
+
+```
+
+
+We note that there are several predictors with good variability which gives us hope that we can accurately predict the response variable *NSP*.  We remove the variables that have very little variability and we scale the columns by subtracting the mean and dividing by the standard deviation.  This helps to remove bias caused by one or more variables with values that are larger than other predictors.  We illustrate by looking at seven columns and the first six rows of the resulting data frame.
+
+
+```{r echo=FALSE}
+# We remove predictors with very little variability.
+
+ctg <- ctg %>% select(-DP,-DS,-FM,-Nzeros,-Tendency)
+
+
+################### We scale the columns
+ctgs <- ctg[,1:16] # subset columns to be scaled
+ctgs <- as.data.frame(scale(ctgs)) # convert to data frame and scale
+ctgs$NSP <- ctg$NSP 
+head(ctgs[,11:17])
+```
+
+
+One question we have before looking at predictors is what is the prevalence of possible abnormalities  
+(Pr(*NSP*) = 1)?  We see with the following code that it is about 22%.
+
+```{r echo=TRUE}
+prev <- mean(ctg$NSP == 1) # Compute the probability of NSP = 1 in the entire data set.
+paste("Prevalence of possible abnormalities is ",100*round(prev,2),"%.")
+```
+
+
+This forces us to be careful in evaluating our models that we develop.  We know that if we predict that every CTG reading in our data set can be classified as *NSP* = 0, we will be accurate 78% of the time.  However, this is useless information to the doctor.  We need to be able to predict when *NSP* = 1 as often as possible in order to have a useful model.  
+
+
+In analyzing the data, we examined many scatter plots, two predictors at a time colored by the response variable, to look for separations of the *NSP* variable.  We include two examples in this paper.  The histograms inform us about which variables might pair well together for the purpose of separating the response.  One such pair is *ASTV* and *Min*.  We use the original values of the predictor variables (before scaling) for these plots.
+
+
+```{r echo=FALSE}
+#############################ASTV vs MIN###############
+splot <- ctg %>% ggplot() 
+splot + geom_jitter(aes(ASTV,Min,col = as.factor(NSP)),
+                    width = 5,height = 5) + 
+  stat_ellipse(aes(ASTV,Min,col=as.factor(NSP)),
+               type = "norm",lwd =1.5) +
+  scale_color_manual(values = c("plum", "brown")) +
+  labs(col = "Diagnosis", title = "ASTV vs, Min",
+       subtitle = "1 indicates possible abnormality")
+########################################################
+```
+
+
+Another pair that had reasonable success separating *NSP* was *ASTV* and *Width*.
+
+
+```{r echo=FALSE}
+#############################Width vs ASTV###############
+splot <- ctg %>% ggplot() 
+splot + geom_jitter(aes(ASTV,Width,col = as.factor(NSP)),
+                    width = 5,height = 5) + 
+  stat_ellipse(aes(ASTV,Width,col=as.factor(NSP)),
+               type = "norm",lwd =1.5) +
+  scale_color_manual(values = c("plum", "brown")) +
+  labs(col = "Diagnosis", title = "ASTV vs. Width",
+       subtitle = "1 indicates possible abnormality")
+########################################################
+```
+
+
+In looking at predictors with good variability and pairwise separability of the response variable, we gain insight into what predictors might contribute to making accurate predictions.  
+
+### Modeling Approach
+
+We first divide the data into training and test sets.  The training set will comprise 80% of the data and we will test our models on the remaining 20% of the data.  For this task we use the partitioning functions in the widely used *caret* package of R.  We include the code for developing the training and test sets at the end of this document in the appendix.
+
+```{r include=FALSE}
+# Before modeling, we split the data into test and train sets.
+set.seed(1965,sample.kind = "Rounding") # need to be able to reproduce results.
+testIndex <- createDataPartition(ctgs$NSP,times = 1,p=.2,list = FALSE)
+ctgTrain <- ctgs %>% slice(-testIndex)
+ctgTest <- ctgs %>% slice(testIndex)
+##################################### 
+```
+
+Our approach to developing prediction algorithms will be to start with a baseline model using Logistic Regression.  Logistic Regression is a good model for binary classification.  Given our exploration of variables that separate *NSP*, we opt for a first model using Logistic Regression with *ASTV* and *Min*.  We will then investigate whether a Logistic Regression model with all predictors would improve on the first model.  For a third and final model, we will use KNN with 5-fold cross validation *on the training set* as well as tuning the parameter k.  We choose 5-fold cross validation based on the size of the training set.  Our folds will have approximately 340 rows each which gives a reasonable potential number of *NSP's* with value equal to 1.  Given the low prevalence of possible abnormalities, we will look at three metrics together; Sensitivity, Specificity, and Accuracy. We include the code for each model at the end of this document in the appendix.
+
+******
+
+## Results
+
+
+### Model 1: Logistic Regression with Predictors *ASTV* and *Min*
+
+For our first model, we establish a baseline using Logistic regression with the predictors *ASTV* and *Min*.  The results of the three metrics Sensitivity, Specificity, and Accuracy are reported.
+
+
+```{r echo=FALSE}
+glm_fit <- ctgTrain %>%   # Logistic Regression with two predictors
+  glm(NSP ~ ASTV + Min, data =.,family = "binomial")
+
+p_hat_glm <- predict(glm_fit,ctgTest, type = "response")
+y_hat_glm <- factor(ifelse(p_hat_glm > .5,1,0),levels = c("0","1"))
+# Compute the three metrics and put into a table
+c1 <-confusionMatrix(y_hat_glm, factor(ctgTest$NSP),positive = "0")$byClass[1:2]
+c2<- confusionMatrix(y_hat_glm, factor(ctgTest$NSP),positive = "0")$overall["Accuracy"]
+df <- data.frame(Result=c(c1[1],c1[2],c2))
+df
+```
+
+
+We see that Specificity is rather low which means we are unable to predict possible abnormalities when they are present.  Accuracy is high due to the prevalence of *NSP* = 0.  Hopefully we can improve on these results with models two and three.  
+
+### Model 2: Logistic Regression with all Predictors.
+
+For Model 2, we run the same model using all predictors and look at the improvement in our three metrics. 
+
+
+```{r echo=FALSE, fig.height=3.2, fig.width=4.8, warning=FALSE}
+####################################### Try all predictors.
+glm_fit2 <- ctgTrain %>% 
+  glm(NSP ~ ., data =.,family = "binomial")
+
+p_hat_glm2 <- predict(glm_fit2,ctgTest, type = "response")
+y_hat_glm2 <- factor(ifelse(p_hat_glm2 > .5,1,0),levels = c("0","1"))
+c1 <-confusionMatrix(y_hat_glm2, factor(ctgTest$NSP),positive = "0")$byClass[1:2]
+c2<- confusionMatrix(y_hat_glm2, factor(ctgTest$NSP),positive = "0")$overall["Accuracy"]
+df <- data.frame(Result=c(c1[1],c1[2],c2))
+df
+# Best model so far: accuracy = .89, spec = .74, sens = .93
+```
+
+
+We get improvement in accuracy and specificity with a decline in sensitivity. In spite of the decline in sensitivity, this is a better model than our first try. We have increased accuracy by 9% and specificity has increased by *more than 40%*! In hopes of advancing our metrics further, we try the knn model so that we can take advantage of cross validation and tuning features.
+
+
+### Model 3: KNN with 5-fold Cross Validation and Tuning Parameter k
+
+
+The following graph shows how overall accuracy of the knn model changes with the number of neighbors. 
+
+```{r echo=FALSE, fig.height=3.2, fig.width=4.8}
+# We try knn with all predictors. We tune the parameter k. 
+# We use 5 fold cross validation.
+control <- trainControl(method = "cv", number = 5, p = .8)
+knn_fit_all <- train(as.factor(NSP) ~ ., 
+                     method = "knn",
+                     data = ctgTrain,
+                     trControl = control,
+                     tuneGrid = data.frame(k = seq(1,51,2)))
+ggplot(knn_fit_all,highlight = TRUE) + 
+  labs(title = "The Best Tune is with k=1") # plot k vs accuracy
+```
+
+
+******
+\pagebreak
+
+We achieve best results when the number of neighbors is equal to 1.
+
+
+```{r echo=FALSE}
+# Make predictions and compute the metrics
+y_hat_knn_all <- predict(knn_fit_all,ctgTest)
+c1 <-confusionMatrix(y_hat_knn_all, factor(ctgTest$NSP),positive = "0")$byClass[1:2]
+c2<- confusionMatrix(y_hat_knn_all, factor(ctgTest$NSP),positive = "0")$overall["Accuracy"]
+df <- data.frame(Result=c(c1[1],c1[2],c2))
+df
+
+# Accuracy .93, spec = .77, sens = .98
+
+
+```
+
+
+All three metrics of model 3 are higher than any of the previous models.  We experimented with dropping out variables but were unable to improve our metrics.  We choose to use model 3 to make predictions based on CTG readings.
+
+
+## Conclusion
+
+
+We summarize our three models below.  
+
+```{r echo=FALSE}
+Log_2 <- c(.95,.31,.79)    # Create a table displaying results for all three models.
+Log_All <- c(.93,.74,.89)
+KNN <- c(.98,.77,.93)
+Model_Metrics <- data.frame(Log_2,Log_All,KNN)
+colnames(Model_Metrics) <- c("Model 1", "Model 2","Model 3")
+row.names(Model_Metrics) <- c("Sensitivity","Specificity","Accuracy")
+Model_Metrics
+```
+
+
+In our final model, knn with k = 1, Sensitivity is 98%.  This means that if the patient has no possible abnormalities, then the model predicts no possible abnormalities 98% of the time.  With Specificity equal to 77%, false positives (predicting possible abnormalities when there are none) will occur at a rate of about 23%.  This may be an acceptable number since we are concerned with being "better safe than sorry."  Ultimately, accuracy of the prediction is 93%.
+
+We are limited by having only 2126 observations in our data set and then only 80% of those being used to develop our knn model.  Given that it is expensive to obtain data related to health care, especially data involved with giving birth, this may be a large data set for the situation.  If we had much more data, we could likely develop a more accurate model.
+
+Future directions for this data set could include investigating decision tree models and random forest.  These models might produce better metrics than those provided by the knn model.
+
+******
+
+\pagebreak
+
+## Appendix
+
+### Statistical Summary of the Data Set
+
+```{r echo=FALSE}
+summary(ctg)
+
+```
+
+
+### Code for Creating Train and Test Sets
+
+```{r,eval=FALSE}
+# We remove variables with very little variance.
+ctg <- ctg %>% select(-DP,-DS,-FM,-Nzeros,-Tendency)
+
+################### We scale the columns
+ctgs <- ctg[,1:16] # subset columns to be scaled
+ctgs <- as.data.frame(scale(ctgs)) # convert to data frame and scale
+ctgs$NSP <- ctg$NSP                # add back the response variable
+head(ctgs[,11:17])
+# Before modeling, we split the data into test and train sets.
+set.seed(1965,sample.kind = "Rounding") # need to be able to reproduce results.
+testIndex <- createDataPartition(ctgs$NSP,times = 1,p=.2,list = FALSE)
+ctgTrain <- ctgs %>% slice(-testIndex)  # data for training
+ctgTest <- ctgs %>% slice(testIndex)    # data for testing
+##################################### 
+```
+
+### Code for Model 1
+
+```{r,eval=FALSE}
+glm_fit <- ctgTrain %>% # Logistic Regression with 2 predictors
+  glm(NSP ~ ASTV + Min, data =.,family = "binomial")
+
+p_hat_glm <- predict(glm_fit,ctgTest, type = "response")
+y_hat_glm <- factor(ifelse(p_hat_glm > .5,1,0),levels = c("0","1"))
+c1 <-confusionMatrix(y_hat_glm, factor(ctgTest$NSP),positive = "0")$byClass[1:2]
+c2<- confusionMatrix(y_hat_glm, factor(ctgTest$NSP),positive = "0")$overall["Accuracy"]
+df <- data.frame(Result=c(c1[1],c1[2],c2))
+
+
+# Produces 79% accuracy; 95% specificity, 31% sensitivity
+
+```
+
+### Code for Model 2
+
+```{r,eval=FALSE}
+####################################### Try all predictors.
+glm_fit2 <- ctgTrain %>% # Logistic regression with all predictors
+  glm(NSP ~ ., data =.,family = "binomial")
+
+p_hat_glm2 <- predict(glm_fit2,ctgTest, type = "response")
+y_hat_glm2 <- factor(ifelse(p_hat_glm2 > .5,1,0),levels = c("0","1"))
+c1 <-confusionMatrix(y_hat_glm2, factor(ctgTest$NSP),positive = "0")$byClass[1:2]
+c2<- confusionMatrix(y_hat_glm2, factor(ctgTest$NSP),positive = "0")$overall["Accuracy"]
+df <- data.frame(Result=c(c1[1],c1[2],c2))
+df
+# Best model so far: accuracy = .89, spec = .74, sens = .93
+
+```
+
+### code for Model 3
+
+```{r,eval=FALSE}
+# We try knn with all predictors. We tune the parameter k. 
+# We use 5 fold cross validation.
+control <- trainControl(method = "cv", number = 5, p = .8)
+knn_fit_all <- train(as.factor(NSP) ~ ., 
+                     method = "knn",
+                     data = ctgTrain,
+                     trControl = control,
+                     tuneGrid = data.frame(k = seq(1,51,2)))
+ggplot(knn_fit_all,highlight = TRUE) + 
+  labs(title = "The Best Tune is with k=1")  # Make plot k vs accuracy
+
+y_hat_knn_all <- predict(knn_fit_all,ctgTest) # Predictions
+c1 <-confusionMatrix(y_hat_knn_all, factor(ctgTest$NSP),positive = "0")$byClass[1:2]
+c2<- confusionMatrix(y_hat_knn_all, factor(ctgTest$NSP),positive = "0")$overall["Accuracy"]
+df <- data.frame(Result=c(c1[1],c1[2],c2))
+df                                           # output three metrics
+
+# Accuracy .93, spec = .77, sens = .98
+```
